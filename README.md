@@ -32,6 +32,23 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 - Swagger UI: http://127.0.0.1:8000/docs
 - OpenAPI JSON: http://127.0.0.1:8000/openapi.json
 
+## Запуск в Docker
+
+```bash
+docker build -t server-time-api .
+docker run -d --name server-time-api -p 8000:8000 server-time-api
+```
+
+Приложение будет доступно на http://127.0.0.1:8000. Состояние контейнера видно
+в `docker ps`: встроенный HEALTHCHECK опрашивает `/api/v1/health` и переводит
+контейнер в статус `healthy`.
+
+Остановка и удаление контейнера:
+
+```bash
+docker rm -f server-time-api
+```
+
 ## Эндпоинты
 
 ### `GET /api/v1/time`
