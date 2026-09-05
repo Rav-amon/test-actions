@@ -30,3 +30,15 @@ class InvalidTimezoneError(AppError):
             status_code=HTTPStatus.BAD_REQUEST,
             details={'timezone': timezone_name},
         )
+
+
+class InvalidDateError(AppError):
+    """Передана дата, которую не удалось разобрать."""
+
+    def __init__(self, raw_date: str) -> None:
+        super().__init__(
+            code='INVALID_DATE',
+            message=f'Некорректная дата: {raw_date}. Ожидается формат YYYY-MM-DD',
+            status_code=HTTPStatus.BAD_REQUEST,
+            details={'date': raw_date, 'expected_format': 'YYYY-MM-DD'},
+        )

@@ -5,6 +5,8 @@
 ## Возможности
 
 - Текущее время сервера в ISO 8601, Unix-миллисекундах и со смещением от UTC
+- Текущая дата сервера с днём недели, номером ISO-недели и днём года
+- Календарные сведения о произвольной дате
 - Конвертация в любой часовой пояс IANA через query-параметр `tz`
 - Единый формат ответа `{ data, error, message }` и единый формат ошибки `{ code, message, details }`
 - Автогенерируемая OpenAPI-спецификация и Swagger UI
@@ -48,6 +50,23 @@ docker run -d --name server-time-api -p 8000:8000 server-time-api
 ```bash
 docker rm -f server-time-api
 ```
+
+## CI/CD
+
+Workflow `.github/workflows/deploy.yml` при пуше в `main` собирает образ,
+публикует его в GitHub Container Registry и разворачивает на сервере по SSH.
+
+Секреты репозитория (Settings → Secrets and variables → Actions):
+
+| Секрет | Описание |
+| --- | --- |
+| `SSH_HOST` | Адрес сервера |
+| `SSH_USER` | Пользователь SSH, состоящий в группе `docker` |
+| `SSH_PRIVATE_KEY` | Приватный ключ целиком, включая строки BEGIN/END |
+| `SSH_PORT` | Порт SSH, обычно `22` |
+
+Токен `GITHUB_TOKEN` для доступа к реестру создаётся автоматически, отдельный
+секрет для него заводить не нужно.
 
 ## Эндпоинты
 
@@ -94,6 +113,70 @@ curl "http://127.0.0.1:8000/api/v1/time?tz=Europe/Moscow"
 }
 ```
 
+### `GET /api/v1/date`
+
+Возвращает текущую дату сервера. Принимает тот же параметр `tz`, что и `/time`.
+Обратите внимание: при разнице часовых поясов дата может отличаться от UTC-даты.
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/date?tz=Asia/Tokyo"
+```
+
+```json
+{
+  "data": {
+    "date": "2026-09-04",
+    "year": 2026,
+    "month": 9,
+    "day": 4,
+    "weekday": 5,
+    "weekday_name": "Friday",
+    "month_name": "September",
+    "iso_week": 36,
+    "day_of_year": 247,
+    "is_leap_year": false,
+    "timezone": "Asia/Tokyo"
+  },
+  "error": null,
+  "message": "Текущая дата сервера"
+}
+```
+
+### `GET /api/v1/date/{target_date}`
+
+Возвращает календарные сведения о произвольной дате. Часовой пояс здесь не
+используется — данные зависят только от самой даты.
+
+| Параметр | Тип | Формат | Описание |
+| --- | --- | --- | --- |
+| `target_date` | string | `YYYY-MM-DD` | Дата, о которой нужны сведения |
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/date/2024-02-29"
+```
+
+```json
+{
+  "data": {
+    "date": "2024-02-29",
+    "year": 2024,
+    "month": 2,
+    "day": 29,
+    "weekday": 4,
+    "weekday_name": "Thursday",
+    "month_name": "February",
+    "iso_week": 9,
+    "day_of_year": 60,
+    "is_leap_year": true
+  },
+  "error": null,
+  "message": "Сведения о дате"
+}
+```
+
+Несуществующая или неверно отформатированная дата даёт `400 Bad Request` с кодом
+`INVALID_DATE`.
+
 ### `GET /api/v1/health`
 
 Возвращает статус сервиса и версию приложения.
@@ -111,6 +194,7 @@ curl "http://127.0.0.1:8000/api/v1/time?tz=Europe/Moscow"
 | Код | HTTP | Когда возникает |
 | --- | --- | --- |
 | `INVALID_TIMEZONE` | 400 | Передан неизвестный часовой пояс |
+| `INVALID_DATE` | 400 | Дата не разобрана или не существует |
 | `VALIDATION_ERROR` | 422 | Некорректные параметры запроса |
 | `NOT_FOUND` | 404 | Запрошен несуществующий маршрут |
 | `INTERNAL_ERROR` | 500 | Непредвиденная ошибка сервера |
@@ -127,6 +211,7 @@ pytest -q
 app/
   api/v1/routes.py       — HTTP-маршруты версии 1
   services/time_service.py — логика работы со временем
+  services/date_service.py — логика работы с датами
   schemas.py             — Pydantic-схемы запросов и ответов
   errors.py              — доменные исключения
   main.py                — сборка приложения и обработчики ошибок

@@ -35,6 +35,27 @@ class ServerTime(BaseModel):
     utc_offset_minutes: int = Field(..., description='Смещение от UTC в минутах', examples=[0])
 
 
+class DateInfo(BaseModel):
+    """Календарные сведения о дате, не зависящие от часового пояса."""
+
+    date: str = Field(..., description='Дата в формате ISO 8601', examples=['2026-09-03'])
+    year: int = Field(..., description='Год', examples=[2026])
+    month: int = Field(..., description='Номер месяца, 1-12', examples=[9])
+    day: int = Field(..., description='День месяца, 1-31', examples=[3])
+    weekday: int = Field(..., description='День недели по ISO: 1 — понедельник, 7 — воскресенье', examples=[4])
+    weekday_name: str = Field(..., description='Название дня недели', examples=['Thursday'])
+    month_name: str = Field(..., description='Название месяца', examples=['September'])
+    iso_week: int = Field(..., description='Номер недели по ISO 8601', examples=[36])
+    day_of_year: int = Field(..., description='Порядковый номер дня в году', examples=[246])
+    is_leap_year: bool = Field(..., description='Является ли год високосным', examples=[False])
+
+
+class ServerDate(DateInfo):
+    """Текущая дата сервера в заданном часовом поясе."""
+
+    timezone: str = Field(..., description='Имя часового пояса', examples=['UTC'])
+
+
 class HealthStatus(BaseModel):
     """Состояние сервиса для health-check."""
 

@@ -1,0 +1,141 @@
+name: Build and Deploy
+
+# Сборка запускается при пуше в main и вручную из вкладки Actions
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  CONTAINER_NAME: server-time-api
+  # Порт на сервере, который будет проброшен в порт 8000 контейнера
+  HOST_PORT: 8000
+
+jobs:
+  # ===== Джоба 1: сборка образа и публикация в GitHub Container Registry =====
+  build-and-push:
+    name: Сборка и публикация образа
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Право записи в GHCR, без него docker push вернёт 403
+      packages: write
+    outputs:
+      image: ${{ steps.image-name.outputs.value }}
+      # Тег вида sha-<полный SHA> совпадает с тем, что генерирует metadata-action
+      # для type=sha,format=long. Берём его явно, а не из outputs.version:
+      # там при пуше в main оказался бы latest, у него выше приоритет
+      tag: sha-${{ github.sha }}
+    steps:
+      - name: Клонирование репозитория
+        uses: actions/checkout@v4
+
+      # GHCR принимает только имена в нижнем регистре, а owner/repo может
+      # содержать заглавные буквы, поэтому приводим имя явно
+      - name: Формирование имени образа
+        id: image-name
+        run: echo "value=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      # Buildx нужен для кэширования слоёв между запусками workflow
+      - name: Настройка Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Авторизация в GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN создаётся автоматически, отдельный секрет не нужен
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Готовит теги и OCI-метки: latest для ветки по умолчанию и
+      # неизменяемый тег с SHA коммита для точного отката
+      - name: Подготовка тегов образа
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image-name.outputs.value }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Сборка и публикация образа
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Кэш слоёв хранится в GitHub Actions Cache
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===== Джоба 2: развёртывание образа на удалённом сервере по SSH =====
+  deploy:
+    name: Развёртывание на сервере
+    runs-on: ubuntu-latest
+    # Запускается только после успешной публикации образа
+    needs: build-and-push
+    permissions:
+      contents: read
+      # Право чтения нужно, чтобы сервер смог скачать приватный образ
+      packages: read
+    steps:
+      - name: Подключение по SSH и развёртывание
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          # Переменные из блока env ниже пробрасываются в сессию на сервере
+          envs: REGISTRY,IMAGE,IMAGE_TAG,CONTAINER_NAME,HOST_PORT,GHCR_USER,GHCR_TOKEN
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # Авторизация на сервере: образ в GHCR приватный по умолчанию.
+            # Токен передаётся через stdin, чтобы не попасть в историю команд
+            echo "$GHCR_TOKEN" | docker login "$REGISTRY" -u "$GHCR_USER" --password-stdin
+
+            # Скачиваем образ по тегу с SHA коммита — так развёртывается
+            # ровно та сборка, которая прошла в этом запуске workflow
+            docker pull "$IMAGE:$IMAGE_TAG"
+
+            # Останавливаем предыдущую версию, если она была запущена
+            docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+            # --restart unless-stopped поднимет контейнер после перезагрузки сервера
+            docker run -d \
+              --name "$CONTAINER_NAME" \
+              --restart unless-stopped \
+              -p "$HOST_PORT":8000 \
+              "$IMAGE:$IMAGE_TAG"
+
+            # Ждём, пока встроенный HEALTHCHECK переведёт контейнер в статус healthy
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER_NAME")
+              if [ "$STATUS" = "healthy" ]; then
+                echo "Контейнер запущен и работоспособен"
+                break
+              fi
+              if [ "$i" = "30" ]; then
+                echo "Контейнер не стал healthy, логи:"
+                docker logs --tail 50 "$CONTAINER_NAME"
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # Удаляем старые неиспользуемые образы, чтобы не забить диск
+            docker image prune -f
+            docker logout "$REGISTRY"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.tag }}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+          HOST_PORT: ${{ env.HOST_PORT }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
